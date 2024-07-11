@@ -122,6 +122,21 @@ fn render(
     }
 }
 
+use rand::Rng;
+
+/// Render random pixels.
+fn random_render(pixels: &mut [u8], bounds: (usize, usize)) {
+    assert!(pixels.len() == bounds.0 * bounds.1);
+
+    let mut rng = rand::thread_rng();
+
+    for row in 0..bounds.1 {
+        for column in 0..bounds.0 {
+            pixels[row * bounds.0 + column] = rng.gen();
+        }
+    }
+}
+
 use image::png::PNGEncoder;
 use image::ColorType;
 use std::fs::File;
@@ -135,12 +150,18 @@ fn write_image(
 ) -> Result<(), std::io::Error> {
     let output = File::create(filename)?;
     let encoder = PNGEncoder::new(output);
-    encoder.encode(
-        &pixels,
-        bounds.0 as u32,
-        bounds.1 as u32,
-        ColorType::Gray(8),
-    )?;
+    let color_type = if pixels.len() == bounds.0 * bounds.1 {
+        ColorType::Gray(8)
+    } else if pixels.len() == bounds.0 * bounds.1 * 3 {
+        ColorType::RGB(8)
+    } else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Invalid pixel data length for specified bounbds",
+        ));
+    };
+
+    encoder.encode(&pixels, bounds.0 as u32, bounds.1 as u32, color_type)?;
     Ok(())
 }
 
@@ -171,8 +192,25 @@ fn main() {
     let lower_right = parse_complex(&args[4]).expect("error parsing lower right corner point");
 
     let mut pixels = vec![0; bounds.0 * bounds.1];
-
     render(&mut pixels, bounds, upper_left, lower_right);
+    write_image(&args[1], &pixels, bounds).expect("error wrinting Mandelbrot PNG file");
 
-    write_image(&args[1], &pixels, bounds).expect("error wrinting PNG file");
+    random_render(&mut pixels, bounds);
+    write_image(&String::from("rand.png"), &pixels, bounds).expect("error writing random PNG file");
+
+    let mut pixels_r = vec![0; bounds.0 * bounds.1];
+    let mut pixels_g = vec![0; bounds.0 * bounds.1];
+    let mut pixels_b = vec![0; bounds.0 * bounds.1];
+    random_render(&mut pixels_r, bounds);
+    random_render(&mut pixels_g, bounds);
+    random_render(&mut pixels_b, bounds);
+
+    let mut pixels_rgb = Vec::with_capacity(bounds.0 * bounds.1 * 3);
+    for i in 0..bounds.0 * bounds.1 {
+        pixels_rgb.push(pixels_r[i]);
+        pixels_rgb.push(pixels_g[i]);
+        pixels_rgb.push(pixels_b[i]);
+    }
+    write_image(&String::from("rand_rgb.png"), &pixels_rgb, bounds)
+        .expect("error writing random RGB PNG file");
 }
