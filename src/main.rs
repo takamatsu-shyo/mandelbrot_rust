@@ -122,29 +122,81 @@ fn render(
     }
 }
 
-use image::png::PNGEncoder;
-use image::ColorType;
-use std::fs::File;
-
-/// Write the buffer 'pixels', whose dimensions are given by 'bounds', to the
-/// file named 'filename'
-fn write_image(
-    filename: &str,
-    pixels: &[u8],
+/// Simple multithread render
+fn bands(
+    pixels: &mut [u8],
     bounds: (usize, usize),
-) -> Result<(), std::io::Error> {
-    let output = File::create(filename)?;
-    let encoder = PNGEncoder::new(output);
-    encoder.encode(
-        &pixels,
-        bounds.0 as u32,
-        bounds.1 as u32,
-        ColorType::Gray(8),
-    )?;
-    Ok(())
+    upper_left: Complex<f64>,
+    lower_right: Complex<f64>,
+    threads: usize,
+) {
+    let row_per_band = bounds.1 / threads + 1;
+    let bands: Vec<&mut [u8]> = pixels.chunks_mut(row_per_band * bounds.0).collect();
+    crossbeam::scope(|spawner| {
+        for (i, band) in bands.into_iter().enumerate() {
+            let top = row_per_band * i;
+            let height = band.len() / bounds.0;
+            let band_bounds = (bounds.0, height);
+            let band_upper_left = pixel_to_point(bounds, (0, top), upper_left, lower_right);
+            let band_lower_right =
+                pixel_to_point(bounds, (bounds.0, top + height), upper_left, lower_right);
+
+            spawner.spawn(move |_| {
+                render(band, band_bounds, band_upper_left, band_lower_right);
+            });
+        }
+    })
+    .unwrap();
+}
+
+use std::sync::Mutex;
+
+/// Task queue
+fn task_queue(
+    pixels: &mut [u8],
+    bounds: (usize, usize),
+    upper_left: Complex<f64>,
+    lower_right: Complex<f64>,
+    threads: usize,
+) {
+    let row_per_band = bounds.1 / threads + 1;
+    {
+        let bands = Mutex::new(pixels.chunks_mut(row_per_band * bounds.0).enumerate());
+        crossbeam::scope(|scope| {
+            for _ in 0..threads {
+                scope.spawn(|_| loop {
+                    match {
+                        let mut guard = bands.lock().unwrap();
+                        guard.next()
+                    } {
+                        None => {
+                            return;
+                        }
+                        Some((i, band)) => {
+                            let top = row_per_band * i;
+                            let height = band.len() / bounds.0;
+                            let band_bounds = (bounds.0, height);
+                            let band_upper_left =
+                                pixel_to_point(bounds, (0, top), upper_left, lower_right);
+                            let band_lower_right = pixel_to_point(
+                                bounds,
+                                (bounds.0, top + height),
+                                upper_left,
+                                lower_right,
+                            );
+
+                            render(band, band_bounds, band_upper_left, band_lower_right);
+                        }
+                    }
+                });
+            }
+        })
+        .unwrap();
+    }
 }
 
 use std::env;
+use std::time::{Duration, Instant};
 
 fn main() {
     let mut args: Vec<String> = env::args().collect();
@@ -153,7 +205,7 @@ fn main() {
         args = vec![
             args[0].clone(),
             "rust_mandel.png".into(),
-            "1920x1200".into(),
+            "2000x1500".into(),
             "-1.20,0.35".into(),
             "-1.0,0.20".into(),
         ];
@@ -172,7 +224,103 @@ fn main() {
 
     let mut pixels = vec![0; bounds.0 * bounds.1];
 
-    render(&mut pixels, bounds, upper_left, lower_right);
+    // Multithreading test part
+    // num_cpus
+    let num_logical_cores = num_cpus::get();
+    let num_physical_cores = num_cpus::get_physical();
+    println!("Logical core : {}", num_logical_cores);
+    println!("Physical core: {}", num_physical_cores);
 
-    write_image(&args[1], &pixels, bounds).expect("error wrinting PNG file");
+    let iteration = 5;
+
+    // Single thread
+    let mut total_duration = Duration::new(0, 0);
+    for _ in 0..iteration {
+        let start = Instant::now();
+
+        render(&mut pixels, bounds, upper_left, lower_right);
+
+        let duration = start.elapsed();
+        total_duration += duration;
+    }
+    let average_duration = total_duration / iteration;
+    println!("render {:?}", average_duration);
+
+    // -------------
+    // Bnads logical
+    let mut total_duration = Duration::new(0, 0);
+    for _ in 0..iteration {
+        let start = Instant::now();
+
+        bands(
+            &mut pixels,
+            bounds,
+            upper_left,
+            lower_right,
+            num_logical_cores,
+        );
+
+        let duration = start.elapsed();
+        total_duration += duration;
+    }
+    let average_duration = total_duration / iteration;
+    println!("band {} {:?}", num_logical_cores, average_duration);
+
+    // Bnads physical
+    let mut total_duration = Duration::new(0, 0);
+    for _ in 0..iteration {
+        let start = Instant::now();
+
+        bands(
+            &mut pixels,
+            bounds,
+            upper_left,
+            lower_right,
+            num_physical_cores,
+        );
+
+        let duration = start.elapsed();
+        total_duration += duration;
+    }
+    let average_duration = total_duration / iteration;
+    println!("band {} {:?}", num_physical_cores, average_duration);
+
+    // -------------
+    // Task queue logical
+    let mut total_duration = Duration::new(0, 0);
+    for _ in 0..iteration {
+        let start = Instant::now();
+
+        task_queue(
+            &mut pixels,
+            bounds,
+            upper_left,
+            lower_right,
+            num_logical_cores,
+        );
+
+        let duration = start.elapsed();
+        total_duration += duration;
+    }
+    let average_duration = total_duration / iteration;
+    println!("task queue {} {:?}", num_logical_cores, average_duration);
+
+    // Task queue physical
+    let mut total_duration = Duration::new(0, 0);
+    for _ in 0..iteration {
+        let start = Instant::now();
+
+        task_queue(
+            &mut pixels,
+            bounds,
+            upper_left,
+            lower_right,
+            num_physical_cores,
+        );
+
+        let duration = start.elapsed();
+        total_duration += duration;
+    }
+    let average_duration = total_duration / iteration;
+    println!("task queue {} {:?}", num_physical_cores, average_duration);
 }
