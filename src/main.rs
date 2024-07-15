@@ -195,6 +195,24 @@ fn task_queue(
     }
 }
 
+use rayon::prelude::*;
+fn rayon_thread(
+    pixels: &mut [u8],
+    bounds: (usize, usize),
+    upper_left: Complex<f64>,
+    lower_right: Complex<f64>,
+) {
+    let bands: Vec<(usize, &mut [u8])> = pixels.chunks_mut(bounds.0).enumerate().collect();
+    bands.into_par_iter().for_each(|(i, band)| {
+        let top = i;
+        let band_bounds = (bounds.0, 1);
+        let band_upper_left = pixel_to_point(bounds, (0, top), upper_left, lower_right);
+        let band_lower_right = pixel_to_point(bounds, (bounds.0, top + 1), upper_left, lower_right);
+
+        render(band, band_bounds, band_upper_left, band_lower_right);
+    });
+}
+
 use std::env;
 use std::time::{Duration, Instant};
 
@@ -205,7 +223,7 @@ fn main() {
         args = vec![
             args[0].clone(),
             "rust_mandel.png".into(),
-            "2000x1500".into(),
+            "1000x750".into(),
             "-1.20,0.35".into(),
             "-1.0,0.20".into(),
         ];
@@ -231,8 +249,7 @@ fn main() {
     println!("Logical core : {}", num_logical_cores);
     println!("Physical core: {}", num_physical_cores);
 
-    let iteration = 5;
-
+    let iteration = 60;
     // Single thread
     let mut total_duration = Duration::new(0, 0);
     for _ in 0..iteration {
@@ -246,81 +263,36 @@ fn main() {
     let average_duration = total_duration / iteration;
     println!("render {:?}", average_duration);
 
-    // -------------
-    // Bnads logical
-    let mut total_duration = Duration::new(0, 0);
-    for _ in 0..iteration {
-        let start = Instant::now();
+    let test_set = 5;
+    let mut test_name: &str = "";
 
-        bands(
-            &mut pixels,
-            bounds,
-            upper_left,
-            lower_right,
-            num_logical_cores,
-        );
+    for test_no in 0..test_set {
+        let num_cores;
+        if test_no % 2 == 0 {
+            num_cores = num_logical_cores;
+        } else {
+            num_cores = num_physical_cores;
+        }
 
-        let duration = start.elapsed();
-        total_duration += duration;
+        let mut total_duration = Duration::new(0, 0);
+        for _ in 0..iteration {
+            let start = Instant::now();
+
+            if test_no < 2 {
+                test_name = "bands";
+                bands(&mut pixels, bounds, upper_left, lower_right, num_cores);
+            } else if test_no < 4 {
+                test_name = "queue";
+                task_queue(&mut pixels, bounds, upper_left, lower_right, num_cores);
+            } else {
+                test_name = "rayon";
+                rayon_thread(&mut pixels, bounds, upper_left, lower_right);
+            }
+
+            let duration = start.elapsed();
+            total_duration += duration;
+        }
+        let average_duration = total_duration / iteration;
+        println!("{} {} {:?}", test_name, num_cores, average_duration);
     }
-    let average_duration = total_duration / iteration;
-    println!("band {} {:?}", num_logical_cores, average_duration);
-
-    // Bnads physical
-    let mut total_duration = Duration::new(0, 0);
-    for _ in 0..iteration {
-        let start = Instant::now();
-
-        bands(
-            &mut pixels,
-            bounds,
-            upper_left,
-            lower_right,
-            num_physical_cores,
-        );
-
-        let duration = start.elapsed();
-        total_duration += duration;
-    }
-    let average_duration = total_duration / iteration;
-    println!("band {} {:?}", num_physical_cores, average_duration);
-
-    // -------------
-    // Task queue logical
-    let mut total_duration = Duration::new(0, 0);
-    for _ in 0..iteration {
-        let start = Instant::now();
-
-        task_queue(
-            &mut pixels,
-            bounds,
-            upper_left,
-            lower_right,
-            num_logical_cores,
-        );
-
-        let duration = start.elapsed();
-        total_duration += duration;
-    }
-    let average_duration = total_duration / iteration;
-    println!("task queue {} {:?}", num_logical_cores, average_duration);
-
-    // Task queue physical
-    let mut total_duration = Duration::new(0, 0);
-    for _ in 0..iteration {
-        let start = Instant::now();
-
-        task_queue(
-            &mut pixels,
-            bounds,
-            upper_left,
-            lower_right,
-            num_physical_cores,
-        );
-
-        let duration = start.elapsed();
-        total_duration += duration;
-    }
-    let average_duration = total_duration / iteration;
-    println!("task queue {} {:?}", num_physical_cores, average_duration);
 }
